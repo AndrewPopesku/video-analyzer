@@ -102,6 +102,7 @@ class Scene(SQLModel, table=True):
     start_time: float
     end_time: float
     label: Optional[str] = None
+    description: Optional[str] = None  # Detailed description of scene content
 
     video: Optional[Video] = Relationship(back_populates="scenes")
 

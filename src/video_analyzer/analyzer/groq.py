@@ -221,10 +221,85 @@ class GroqProvider(AIProvider):
                 raise GroqAPIError(f"Groq generation error: {e}") from e
             raise
 
-    def detect_scenes_and_shots(self, image_paths: list[Path]) -> list[dict]:
-        """Detect scenes and shots from a list of keyframes."""
-        # TODO: Implement scene detection logic
-        return [{"id": 0, "start": 0, "end": 0, "label": "Full Video"}]
+    def detect_scenes_and_shots(
+        self, image_paths: list[Path], timestamps: list[float]
+    ) -> list[dict]:
+        """Detect scenes and shots from keyframes with timestamps."""
+        if not image_paths or not timestamps:
+            return [
+                {
+                    "start_time": 0.0,
+                    "end_time": 0.0,
+                    "label": "Full Video",
+                    "description": "No frames available for analysis",
+                }
+            ]
+
+        # Groq supports only 5 images at a time, so sample evenly
+        max_frames = 5
+        if len(image_paths) > max_frames:
+            indices = [
+                int(i * (len(image_paths) - 1) / (max_frames - 1))
+                for i in range(max_frames)
+            ]
+            selected_images = [image_paths[i] for i in indices]
+            selected_timestamps = [timestamps[i] for i in indices]
+        else:
+            selected_images = image_paths
+            selected_timestamps = timestamps
+
+        frame_info = "\n".join(
+            [
+                f"- Frame {i}: {ts:.1f}s ({int(ts // 60)}:{int(ts % 60):02d})"
+                for i, ts in enumerate(selected_timestamps)
+            ]
+        )
+
+        prompt = f"""Analyze these video frames to identify distinct scenes.
+
+FRAME TIMESTAMPS:
+{frame_info}
+
+For each scene, provide:
+- "start_time": Timestamp in seconds where scene begins
+- "end_time": Timestamp in seconds where scene ends
+- "label": Short scene title (3-5 words)
+- "description": 1-2 sentence description of what's happening
+
+Return JSON: {{"scenes": [...]}}
+
+Use the ACTUAL timestamps above. Return ONLY the JSON object."""
+
+        import json
+        import re
+
+        response = self.analyze_images(selected_images, prompt)
+        try:
+            match = re.search(r"\{.*\}", response, re.DOTALL)
+            if match:
+                data = json.loads(match.group())
+                scenes = data.get("scenes", [])
+                validated_scenes = []
+                for s in scenes:
+                    validated_scenes.append(
+                        {
+                            "start_time": float(s.get("start_time", 0)),
+                            "end_time": float(s.get("end_time", 0)),
+                            "label": s.get("label", "Scene"),
+                            "description": s.get("description", ""),
+                        }
+                    )
+                return validated_scenes if validated_scenes else []
+            return []
+        except Exception:
+            return [
+                {
+                    "start_time": 0.0,
+                    "end_time": 0.0,
+                    "label": "Full Video",
+                    "description": "Scene detection unavailable",
+                }
+            ]
 
     def extract_entities(self, text: str, image_paths: list[Path]) -> list[dict]:
         """Extract named entities (Brands, Locations, People) from text and visuals."""

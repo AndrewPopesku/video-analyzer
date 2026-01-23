@@ -34,8 +34,18 @@ class AIProvider(ABC):
         pass
 
     @abstractmethod
-    def detect_scenes_and_shots(self, image_paths: list[Path]) -> list[dict]:
-        """Detect scenes and shots from a list of keyframes."""
+    def detect_scenes_and_shots(
+        self, image_paths: list[Path], timestamps: list[float]
+    ) -> list[dict]:
+        """Detect scenes and shots from a list of keyframes with their timestamps.
+
+        Args:
+            image_paths: List of paths to keyframe images
+            timestamps: List of timestamps (in seconds) corresponding to each frame
+
+        Returns:
+            List of dicts with keys: start_time, end_time, label, description
+        """
         pass
 
     @abstractmethod

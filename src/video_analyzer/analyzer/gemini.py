@@ -254,40 +254,105 @@ Important:
                 raise GeminiAPIError(f"Gemini generation error: {e}") from e
             raise
 
-    def detect_scenes_and_shots(self, image_paths: list[Path]) -> list[dict]:
-        """Detect scenes and shots from a list of keyframes."""
-        if not image_paths:
-            return [{"id": 0, "start": 0, "end": 0, "label": "Full Video"}]
+    def detect_scenes_and_shots(
+        self, image_paths: list[Path], timestamps: list[float]
+    ) -> list[dict]:
+        """Detect scenes and shots from a list of keyframes with their timestamps."""
+        if not image_paths or not timestamps:
+            return [
+                {
+                    "start_time": 0.0,
+                    "end_time": 0.0,
+                    "label": "Full Video",
+                    "description": "No frames available for analysis",
+                }
+            ]
 
-        # Gemini can handle a sequence of images to detect transitions
-        prompt = """Analyze this sequence of video frames and identify distinct scenes and shots.
-A 'scene' is a collection of related shots in the same location/setting.
-A 'shot' is a continuous camera take (look for cuts).
+        # Sample up to 30 frames evenly across the video for good coverage
+        max_frames = 30
+        if len(image_paths) > max_frames:
+            indices = [
+                int(i * (len(image_paths) - 1) / (max_frames - 1))
+                for i in range(max_frames)
+            ]
+            selected_images = [image_paths[i] for i in indices]
+            selected_timestamps = [timestamps[i] for i in indices]
+        else:
+            selected_images = image_paths
+            selected_timestamps = timestamps
 
-Return a JSON object with:
-- "scenes": List of scenes, each with:
-    - "start_frame_index": 0-indexed index in the provided list
-    - "end_frame_index": 0-indexed index in the provided list
-    - "label": Descriptive title for the scene (e.g., "Intro", "Interview", "Product Demo")
-- "shots": List of shots, each with:
-    - "frame_index": The index of the frame that represents this shot (cut)
+        # Build timestamp info for the prompt
+        frame_info = "\n".join(
+            [
+                f"- Frame {i}: {ts:.1f}s ({int(ts // 60)}:{int(ts % 60):02d})"
+                for i, ts in enumerate(selected_timestamps)
+            ]
+        )
 
-Return ONLY the JSON object."""
+        prompt = f"""Analyze this sequence of video frames to identify distinct scenes.
 
-        # We might want to send a subset if too many, but Gemini can handle ~20-30 well
-        selected_images = image_paths[:20] if len(image_paths) > 20 else image_paths
+FRAME TIMESTAMPS:
+{frame_info}
+
+A 'scene' is a coherent segment where the content, setting, or topic remains consistent.
+Look for significant changes in:
+- Location or setting
+- Visual style (e.g., switch from talking head to B-roll footage)
+- Topic or activity being shown
+- Camera angle or shot type
+
+For each scene, provide:
+- "start_time": The timestamp (in seconds) where this scene begins
+- "end_time": The timestamp (in seconds) where this scene ends
+- "label": A short title (3-5 words) describing the scene type
+- "description": A detailed 1-2 sentence description of what is happening in this scene
+
+Return a JSON object with a "scenes" array:
+{{
+  "scenes": [
+    {{
+      "start_time": 0.0,
+      "end_time": 45.0,
+      "label": "Introduction",
+      "description": "The host greets viewers from a home office setup, introducing today's topic."
+    }}
+  ]
+}}
+
+Important:
+- Use the ACTUAL timestamps from the list above, not frame indices
+- Ensure scenes are contiguous (end_time of one scene should match start_time of next)
+- Provide meaningful descriptions that explain WHAT is happening
+- Return ONLY the JSON object."""
 
         response = self.analyze_images(selected_images, prompt)
         try:
-            import json
-            import re
             match = re.search(r"\{.*\}", response, re.DOTALL)
             if match:
                 data = json.loads(match.group())
-                return data.get("scenes", [])
+                scenes = data.get("scenes", [])
+                # Validate and return scenes with correct structure
+                validated_scenes = []
+                for s in scenes:
+                    validated_scenes.append(
+                        {
+                            "start_time": float(s.get("start_time", 0)),
+                            "end_time": float(s.get("end_time", 0)),
+                            "label": s.get("label", "Scene"),
+                            "description": s.get("description", ""),
+                        }
+                    )
+                return validated_scenes if validated_scenes else []
             return []
         except Exception:
-            return [{"id": 0, "start": 0, "end": 0, "label": "Analysis Failed"}]
+            return [
+                {
+                    "start_time": 0.0,
+                    "end_time": 0.0,
+                    "label": "Analysis Failed",
+                    "description": "Could not parse scene detection response",
+                }
+            ]
 
     def extract_entities(self, text: str, image_paths: list[Path]) -> list[dict]:
         """Extract named entities (Brands, Locations, People) from text and visuals."""

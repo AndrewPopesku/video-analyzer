@@ -298,19 +298,25 @@ def analyze(
                             session.add(res)
                 session.commit()
 
-            scenes_data = provider.detect_scenes_and_shots(keyframe_paths)
+            # Scene Detection - use all frames with proper timestamps
+            progress.update(task, description="Detecting scenes...")
+            all_frame_data = [
+                (Path(f["frame_path"]), f.get("timestamp", 0.0))
+                for f in frame_analysis
+                if f.get("frame_path")
+            ]
+            scene_frame_paths = [f[0] for f in all_frame_data]
+            scene_timestamps = [f[1] for f in all_frame_data]
+
+            scenes_data = provider.detect_scenes_and_shots(scene_frame_paths, scene_timestamps)
             with get_session() as session:
                 for s_data in scenes_data:
-                    start_idx = s_data.get("start_frame_index", 0)
-                    end_idx = s_data.get("end_frame_index", 0)
-                    start_time = float(start_idx) / settings.frame_rate
-                    end_time = float(end_idx) / settings.frame_rate
-
                     scene = Scene(
                         video_id=video_db_id,
-                        start_time=start_time,
-                        end_time=end_time,
+                        start_time=s_data.get("start_time", 0.0),
+                        end_time=s_data.get("end_time", 0.0),
                         label=s_data.get("label", "Scene"),
+                        description=s_data.get("description", ""),
                     )
                     session.add(scene)
                 session.commit()
@@ -453,11 +459,15 @@ def summary(
         scenes = session.exec(select(Scene).where(Scene.video_id == video.id).order_by(Scene.start_time)).all()
         if scenes:
             table = Table(title="Scenes & Shots", show_header=True, header_style="bold green")
-            table.add_column("Time")
-            table.add_column("Label")
+            table.add_column("Time", width=15)
+            table.add_column("Label", width=20)
+            table.add_column("Description", width=50)
             for s in scenes:
                 time_range = f"{int(s.start_time // 60)}:{int(s.start_time % 60):02d} - {int(s.end_time // 60)}:{int(s.end_time % 60):02d}"
-                table.add_row(time_range, s.label or "Scene")
+                description = (s.description or "")[:50]
+                if s.description and len(s.description) > 50:
+                    description += "..."
+                table.add_row(time_range, s.label or "Scene", description)
             console.print(table)
             console.print("")
 
