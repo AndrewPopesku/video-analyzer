@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     audio_chunk_minutes: int = 10  # chunk audio into 10-minute segments
     max_frames_per_batch: int = 5  # frames to analyze in single request
 
+    # Frame deduplication
+    enable_deduplication: bool = True
+    dedup_method: Literal["hash", "embedding"] = "embedding"  # embedding is more accurate
+    dedup_threshold: float = 0.95  # Cosine similarity for embedding (0-1), Hamming for hash
+    dedup_algorithm: Literal["ahash", "phash", "dhash", "colorhash"] = "ahash"  # Only for hash method
+    dedup_hash_size: int = 8  # Hash size (8 or 16), only for hash method
+    dedup_sequential_only: bool = True  # Only for hash method (embedding always uses non-sequential)
+
     @property
     def data_directory(self) -> Path:
         """Get absolute data directory path."""

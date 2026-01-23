@@ -56,6 +56,11 @@ class Frame(SQLModel, table=True):
     objects: Optional[str] = None  # JSON list of detected objects
     scene_type: Optional[str] = None  # e.g., "talking_head", "b_roll", "text_overlay"
 
+    # Deduplication fields
+    perceptual_hash: Optional[str] = None  # hex string of pHash
+    is_duplicate: bool = Field(default=False)
+    reference_frame_id: Optional[int] = Field(default=None, foreign_key="frame.id")
+
     video: Optional[Video] = Relationship(back_populates="frames")
 
 

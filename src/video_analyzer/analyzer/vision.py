@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ..config import settings
 from ..storage.media import list_frames
+from .deduplication import DeduplicationResult, apply_analysis_to_duplicates, get_deduplicator
 from .provider import get_provider
 
 
@@ -64,37 +65,86 @@ def analyze_frames_batch(frame_paths: list[Path]) -> list[dict]:
     return _parse_batch_response(response, len(frame_paths))
 
 
-def analyze_frames(video_id: str, batch_size: int | None = None) -> list[dict]:
-    """Analyze all frames for a video."""
+def analyze_frames(
+    video_id: str,
+    batch_size: int | None = None,
+    enable_deduplication: bool | None = None,
+) -> tuple[list[dict], DeduplicationResult | None]:
+    """
+    Analyze all frames for a video with optional deduplication.
+
+    Args:
+        video_id: The video identifier
+        batch_size: Number of frames per batch (default from settings)
+        enable_deduplication: Override deduplication setting (default from settings)
+
+    Returns:
+        Tuple of (analysis_results, dedup_result).
+        dedup_result is None if deduplication was disabled.
+    """
     if batch_size is None:
         batch_size = settings.max_frames_per_batch
+    if enable_deduplication is None:
+        enable_deduplication = settings.enable_deduplication
 
-    frames = list_frames(video_id)
-    if not frames:
-        return []
+    all_frames = list_frames(video_id)
+    if not all_frames:
+        return [], None
 
-    all_results = []
+    # Deduplication step
+    dedup_result: DeduplicationResult | None = None
+    frames_to_analyze = all_frames
+    duplicate_map: dict[Path, Path] = {}
 
-    # Process in batches
-    for i in range(0, len(frames), batch_size):
-        batch = frames[i : i + batch_size]
+    if enable_deduplication:
+        if settings.dedup_method == "embedding":
+            deduplicator = get_deduplicator(
+                method="embedding",
+                threshold=settings.dedup_threshold,
+            )
+        else:
+            deduplicator = get_deduplicator(
+                method="hash",
+                threshold=settings.dedup_threshold,
+                algorithm=settings.dedup_algorithm,
+                hash_size=settings.dedup_hash_size,
+                sequential_only=settings.dedup_sequential_only,
+            )
+        dedup_result = deduplicator.deduplicate_frames(all_frames)
+        frames_to_analyze = dedup_result.unique_frames
+        duplicate_map = dedup_result.duplicate_map
+
+    # Analyze only unique frames
+    unique_results: list[dict] = []
+    for i in range(0, len(frames_to_analyze), batch_size):
+        batch = frames_to_analyze[i : i + batch_size]
 
         if len(batch) == 1:
             result = analyze_frame(batch[0])
-            result["frame_index"] = i
             result["frame_path"] = str(batch[0])
-            result["timestamp"] = _frame_number_to_timestamp(i, settings.frame_rate)
-            all_results.append(result)
+            unique_results.append(result)
         else:
             results = analyze_frames_batch(batch)
             for j, result in enumerate(results):
-                frame_idx = i + j
-                result["frame_index"] = frame_idx
-                result["frame_path"] = str(frames[frame_idx]) if frame_idx < len(frames) else None
-                result["timestamp"] = _frame_number_to_timestamp(frame_idx, settings.frame_rate)
-                all_results.append(result)
+                if i + j < len(frames_to_analyze):
+                    result["frame_path"] = str(frames_to_analyze[i + j])
+                unique_results.append(result)
 
-    return all_results
+    # Apply analysis to duplicates and build complete results
+    if enable_deduplication and dedup_result:
+        all_results = apply_analysis_to_duplicates(
+            unique_results, duplicate_map, all_frames, settings.frame_rate
+        )
+    else:
+        # No deduplication - add metadata to results
+        all_results = []
+        for i, result in enumerate(unique_results):
+            result["frame_index"] = i
+            result["timestamp"] = _frame_number_to_timestamp(i, settings.frame_rate)
+            result["is_duplicate"] = False
+            all_results.append(result)
+
+    return all_results, dedup_result
 
 
 def _frame_number_to_timestamp(frame_number: int, fps: float) -> float:

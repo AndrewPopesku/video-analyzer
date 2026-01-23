@@ -160,23 +160,61 @@ def analyze(
                     session.add(t)
                 session.commit()
 
-            # Analyze frames
+            # Analyze frames with deduplication
             progress.update(task, description="Analyzing frames...")
-            frame_analysis = analyze_frames(info.video_id)
-            console.print(f"Analyzed {len(frame_analysis)} frames")
+            frame_analysis, dedup_result = analyze_frames(info.video_id)
+
+            # Show deduplication stats
+            if dedup_result and dedup_result.stats:
+                stats = dedup_result.stats
+                total = stats.get("total_frames", 0)
+                unique = stats.get("unique_frames", 0)
+                dups = stats.get("duplicates", 0)
+                ratio = stats.get("dedup_ratio", 0)
+                api_saved = dups // settings.max_frames_per_batch
+                console.print(
+                    f"Frames: {total} total, {unique} unique, {dups} duplicates "
+                    f"([green]{ratio:.0%} savings[/green], ~{api_saved} API calls saved)"
+                )
+            else:
+                console.print(f"Analyzed {len(frame_analysis)} frames")
 
             # Save frame analysis to database
             with get_session() as session:
+                # First pass: save all frames and build path->id map
+                frame_id_map: dict[str, int] = {}
                 for fa in frame_analysis:
+                    frame_path = fa.get("frame_path", "")
+                    # Get hash from dedup_result if available
+                    phash = None
+                    if dedup_result and dedup_result.hashes:
+                        from pathlib import Path
+                        phash = dedup_result.hashes.get(Path(frame_path))
+
                     f = Frame(
                         video_id=video_db_id,
                         timestamp=fa.get("timestamp", 0),
-                        frame_path=fa.get("frame_path", ""),
+                        frame_path=frame_path,
                         description=fa.get("description"),
                         objects=str(fa.get("objects", [])),
                         scene_type=fa.get("scene_type"),
+                        perceptual_hash=phash,
+                        is_duplicate=fa.get("is_duplicate", False),
                     )
                     session.add(f)
+                    session.flush()  # Get the ID
+                    frame_id_map[frame_path] = f.id
+
+                # Second pass: set reference_frame_id for duplicates
+                for fa in frame_analysis:
+                    if fa.get("is_duplicate") and fa.get("reference_frame_path"):
+                        frame_path = fa.get("frame_path", "")
+                        ref_path = fa.get("reference_frame_path")
+                        if frame_path in frame_id_map and ref_path in frame_id_map:
+                            frame = session.get(Frame, frame_id_map[frame_path])
+                            if frame:
+                                frame.reference_frame_id = frame_id_map[ref_path]
+
                 session.commit()
 
             # Detect hooks
@@ -575,6 +613,17 @@ def config():
     console.print(f"Groq API Key: {'***' + settings.groq_api_key[-4:] if settings.groq_api_key else 'Not set'}")
     console.print(f"Data Directory: {settings.data_directory}")
     console.print(f"Frame Rate: {settings.frame_rate} fps")
+
+    console.print(f"\n[bold]Frame Deduplication[/bold]")
+    console.print(f"Enabled: {settings.enable_deduplication}")
+    console.print(f"Method: {settings.dedup_method}")
+    if settings.dedup_method == "embedding":
+        console.print(f"Threshold: {settings.dedup_threshold} (cosine similarity, 0-1)")
+    else:
+        console.print(f"Algorithm: {settings.dedup_algorithm}")
+        console.print(f"Hash size: {settings.dedup_hash_size}")
+        console.print(f"Threshold: {settings.dedup_threshold} (Hamming distance)")
+        console.print(f"Sequential only: {settings.dedup_sequential_only}")
 
 
 @app.command()
