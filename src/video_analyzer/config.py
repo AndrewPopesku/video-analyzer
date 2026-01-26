@@ -14,11 +14,11 @@ class Settings(BaseSettings):
     )
 
     # Provider selection
-    ai_provider: Literal["gemini", "groq"] = "groq"
+    ai_provider: Literal["gemini", "groq"] = "gemini"
 
     # Gemini API
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-3-flash-preview"
 
     # Gemini rate limiting
     gemini_rpm: int = 15  # requests per minute

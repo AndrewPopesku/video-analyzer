@@ -1,6 +1,7 @@
 """Gemini API provider with rate limiting and retry logic."""
 
 import json
+import re
 import time
 from pathlib import Path
 
