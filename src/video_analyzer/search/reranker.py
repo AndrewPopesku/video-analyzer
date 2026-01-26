@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from sqlmodel import select
 
+from ..analyzer import prompts
 from ..analyzer.provider import get_provider
 from ..storage.database import get_session
 from ..storage.models import Video, Transcript, Frame, Hook, Moment
@@ -22,33 +23,12 @@ class SearchResult:
     relevance_score: float
 
 
-RERANK_PROMPT = """Given the search query and candidate results, re-rank them by relevance.
-
-QUERY: {query}
-
-CANDIDATES:
-{candidates}
-
-For each candidate, assign a relevance score from 0.0 to 1.0 based on:
-- Semantic relevance to the query (not just keyword matching)
-- How well it answers what the user is looking for
-- Context and intent behind the query
-
-Return a JSON array of objects with "index" and "score":
-[
-  {{"index": 0, "score": 0.95}},
-  {{"index": 1, "score": 0.72}},
-  ...
-]
-
-Only include candidates with score >= 0.3. Order by score descending.
-Return ONLY the JSON array."""
-
-
 def search_videos(query: str, limit: int = 10) -> list[SearchResult]:
     """Search across all analyzed videos using Gemini re-ranking."""
     # Gather candidate results from database
-    candidates = _gather_candidates(query, limit * 3)  # Get more candidates for re-ranking
+    candidates = _gather_candidates(
+        query, limit * 3
+    )  # Get more candidates for re-ranking
 
     if not candidates:
         return []
@@ -172,8 +152,8 @@ def rerank_results(query: str, candidates: list[SearchResult]) -> list[SearchRes
 
     provider = get_provider()
     response = provider.generate(
-        RERANK_PROMPT.format(query=query, candidates=candidate_text),
-        system="You are a search relevance expert. Always return valid JSON.",
+        prompts.search_rerank(query, candidate_text),
+        system=prompts.SYSTEM_SEARCH_RERANK,
     )
 
     # Parse scores

@@ -3,8 +3,8 @@
 import json
 from dataclasses import dataclass
 
+from . import prompts
 from .provider import get_provider
-from .transcribe import get_transcript_range
 
 
 @dataclass
@@ -17,75 +17,6 @@ class DetectedHook:
     description: str
     confidence: float
     transcript_snippet: str | None = None
-
-
-HOOK_DETECTION_PROMPT = """Analyze this video content for attention hooks - moments designed to capture and retain viewer attention.
-
-TRANSCRIPT (with timestamps):
-{transcript}
-
-FRAME ANALYSIS:
-{frame_analysis}
-
-Identify hooks in these categories:
-
-1. **Visual Hooks**: Scene changes, text overlays, face close-ups, motion spikes
-2. **Audio Hooks**: Energy shifts, music drops, silence-to-speech, questions to viewer
-3. **Content Patterns**:
-   - Pattern interrupts ("But here's the thing...", "Plot twist...")
-   - Open loops / cliffhangers ("What happens next will surprise you")
-   - Contrast and surprise elements
-   - Direct viewer engagement ("Have you ever...")
-
-4. **First 30 Seconds Analysis**: Specifically analyze how the video hooks viewers in the opening
-
-Return a JSON array of detected hooks:
-[
-  {{
-    "timestamp": 0.0,
-    "end_timestamp": 5.0,
-    "hook_type": "content",
-    "description": "Opens with a provocative question to engage viewers",
-    "confidence": 0.85,
-    "transcript_snippet": "Have you ever wondered why..."
-  }}
-]
-
-Guidelines:
-- Focus on the most impactful hooks (quality over quantity)
-- Confidence should reflect how likely this is to retain viewer attention
-- Include transcript snippet when the hook involves speech
-- timestamp is start of hook in seconds
-
-Return ONLY the JSON array."""
-
-
-INTRO_ANALYSIS_PROMPT = """Analyze this video's opening hook (first 30-60 seconds).
-
-TRANSCRIPT:
-{transcript}
-
-FRAMES (in order):
-{frame_descriptions}
-
-Evaluate the intro's hook effectiveness:
-
-1. **Hook Type**: What technique is used? (question, bold claim, story tease, visual surprise, etc.)
-2. **Speed to Hook**: How quickly does the video grab attention?
-3. **Promise**: What does the intro promise the viewer?
-4. **Thumbnail-Title Alignment**: Based on the opening, does it likely match expectations set by title/thumbnail?
-
-Return JSON:
-{{
-  "hook_technique": "description of the hook technique used",
-  "hook_timestamp": 0.0,
-  "speed_rating": "fast|medium|slow",
-  "promise": "what the video promises to deliver",
-  "effectiveness_score": 0.0-1.0,
-  "improvement_suggestion": "how the hook could be stronger"
-}}
-
-Return ONLY the JSON object."""
 
 
 def detect_hooks(
@@ -102,11 +33,8 @@ def detect_hooks(
     frame_text = _format_frame_analysis(frame_analysis)
 
     response = provider.generate(
-        HOOK_DETECTION_PROMPT.format(
-            transcript=transcript_text,
-            frame_analysis=frame_text,
-        ),
-        system="You are a video content strategist expert at identifying attention hooks. Always return valid JSON.",
+        prompts.hook_detection(transcript_text, frame_text),
+        system=prompts.SYSTEM_HOOK_DETECTION,
     )
 
     hooks = _parse_hooks_response(response)
@@ -133,11 +61,8 @@ def analyze_intro(
     )
 
     response = provider.generate(
-        INTRO_ANALYSIS_PROMPT.format(
-            transcript=transcript_text,
-            frame_descriptions=frame_text,
-        ),
-        system="You are a video content strategist. Always return valid JSON.",
+        prompts.intro_analysis(transcript_text, frame_text),
+        system=prompts.SYSTEM_INTRO_ANALYSIS,
     )
 
     return _parse_intro_response(response)

@@ -75,9 +75,11 @@ def get_provider() -> AIProvider:
     if _provider is None:
         if settings.ai_provider == "groq":
             from .groq import GroqProvider
+
             _provider = GroqProvider()
         else:
             from .gemini import GeminiProvider
+
             _provider = GeminiProvider()
 
     return _provider

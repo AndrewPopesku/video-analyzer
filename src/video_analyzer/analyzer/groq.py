@@ -7,14 +7,12 @@ from pathlib import Path
 from groq import Groq
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
+from video_analyzer.analyzer.exceptions import GroqAPIError
+
 from ..config import settings
 from ..storage.database import increment_quota
+from . import prompts
 from .provider import AIProvider
-
-
-class GroqAPIError(Exception):
-    """Raised when Groq API returns an error."""
-    pass
 
 
 def _should_retry(exception: Exception) -> bool:
@@ -83,24 +81,30 @@ class GroqProvider(AIProvider):
                 for seg in transcription.segments:
                     # transcription.segments can be a list of objects or dicts
                     if isinstance(seg, dict):
-                        segments.append({
-                            "start": seg.get("start", 0.0),
-                            "end": seg.get("end", 0.0),
-                            "text": seg.get("text", ""),
-                        })
+                        segments.append(
+                            {
+                                "start": seg.get("start", 0.0),
+                                "end": seg.get("end", 0.0),
+                                "text": seg.get("text", ""),
+                            }
+                        )
                     else:
-                        segments.append({
-                            "start": getattr(seg, "start", 0.0),
-                            "end": getattr(seg, "end", 0.0),
-                            "text": getattr(seg, "text", ""),
-                        })
+                        segments.append(
+                            {
+                                "start": getattr(seg, "start", 0.0),
+                                "end": getattr(seg, "end", 0.0),
+                                "text": getattr(seg, "text", ""),
+                            }
+                        )
             else:
                 # Fallback if no segments
-                segments.append({
-                    "start": 0.0,
-                    "end": 0.0,
-                    "text": getattr(transcription, "text", str(transcription)),
-                })
+                segments.append(
+                    {
+                        "start": 0.0,
+                        "end": 0.0,
+                        "text": getattr(transcription, "text", str(transcription)),
+                    }
+                )
 
             return segments
 
@@ -121,20 +125,28 @@ class GroqProvider(AIProvider):
 
         try:
             image_data = base64.b64encode(image_path.read_bytes()).decode()
-            mime_type = "image/jpeg" if image_path.suffix.lower() in [".jpg", ".jpeg"] else "image/png"
+            mime_type = (
+                "image/jpeg"
+                if image_path.suffix.lower() in [".jpg", ".jpeg"]
+                else "image/png"
+            )
 
             response = self.client.chat.completions.create(
                 model=settings.groq_vision_model,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{mime_type};base64,{image_data}"},
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{image_data}"
+                                },
+                            },
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ],
                 max_tokens=1024,
             )
 
@@ -165,11 +177,17 @@ class GroqProvider(AIProvider):
             content = []
             for image_path in paths_to_use:
                 image_data = base64.b64encode(image_path.read_bytes()).decode()
-                mime_type = "image/jpeg" if image_path.suffix.lower() in [".jpg", ".jpeg"] else "image/png"
-                content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime_type};base64,{image_data}"},
-                })
+                mime_type = (
+                    "image/jpeg"
+                    if image_path.suffix.lower() in [".jpg", ".jpeg"]
+                    else "image/png"
+                )
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{image_data}"},
+                    }
+                )
 
             content.append({"type": "text", "text": prompt})
 
@@ -255,24 +273,10 @@ class GroqProvider(AIProvider):
             ]
         )
 
-        prompt = f"""Analyze these video frames to identify distinct scenes.
-
-FRAME TIMESTAMPS:
-{frame_info}
-
-For each scene, provide:
-- "start_time": Timestamp in seconds where scene begins
-- "end_time": Timestamp in seconds where scene ends
-- "label": Short scene title (3-5 words)
-- "description": 1-2 sentence description of what's happening
-
-Return JSON: {{"scenes": [...]}}
-
-Use the ACTUAL timestamps above. Return ONLY the JSON object."""
-
         import json
         import re
 
+        prompt = prompts.scene_detection_simple(frame_info)
         response = self.analyze_images(selected_images, prompt)
         try:
             match = re.search(r"\{.*\}", response, re.DOTALL)
@@ -306,33 +310,13 @@ Use the ACTUAL timestamps above. Return ONLY the JSON object."""
         if not text:
             return []
 
-        system = "You are a named entity recognition expert. Identify Brands, Locations, and People mentioned in the transcript or visible in the visuals."
-        prompt = f"""Transcript:
-{text}
-
-Identify unique entities mentioned:
-- Brands (e.g., Apple, Nike, YouTube)
-- Locations (e.g., New York, The Studio, California)
-- People (e.g., Steve Jobs, The Host, MrBeast)
-
-Return a JSON list of objects, each with:
-- "name": Name of the entity
-- "type": One of "Brand", "Location", "Person"
-- "count": How many times it was mentioned/seen
-- "description": A brief 1-sentence description or context
-
-Example:
-[
-  {{"name": "Tesla", "type": "Brand", "count": 3, "description": "Electric vehicle manufacturer mentioned during the intro."}}
-]
-
-Return ONLY the JSON list."""
-
-        # For now, we mainly use text as Groq vision is limited in batch size/complex reasoning over many images
-        response = self.generate(prompt, system=system)
+        prompt = prompts.entity_extraction_detailed(text)
+        # Groq vision is limited, so we mainly use text for entity extraction
+        response = self.generate(prompt, system=prompts.SYSTEM_ENTITY_EXTRACTION)
         try:
             import json
             import re
+
             match = re.search(r"\[.*\]", response, re.DOTALL)
             if match:
                 return json.loads(match.group())
@@ -345,33 +329,13 @@ Return ONLY the JSON list."""
         if not text:
             return {"topics": [], "keywords": []}
 
-        system = "You are a video metadata expert. Extract high-level topics and keywords from the provided transcript."
-        prompt = f"""Transcript:
-{text}
-
-Return a JSON object with:
-- "topics": List of high-level topics discussed (max 5, each with "name" and "confidence")
-- "keywords": List of important keywords (max 10, each with "text" and "confidence")
-
-Example:
-{{
-  "topics": [
-    {{"name": "Product Review", "confidence": 0.95}},
-    {{"name": "Tech Comparison", "confidence": 0.8}}
-  ],
-  "keywords": [
-    {{"text": "iPhone 15", "confidence": 1.0}},
-    {{"text": "Camera quality", "confidence": 0.9}}
-  ]
-}}
-
-Return ONLY the JSON object."""
-
-        response = self.generate(prompt, system=system)
+        prompt = prompts.topics_keywords_detailed(text)
+        response = self.generate(prompt, system=prompts.SYSTEM_TOPICS_KEYWORDS)
         try:
             # Simple JSON extraction
             import json
             import re
+
             match = re.search(r"\{.*\}", response, re.DOTALL)
             if match:
                 return json.loads(match.group())
@@ -381,21 +345,11 @@ Return ONLY the JSON object."""
 
     def perform_ocr(self, image_path: Path) -> list[dict]:
         """Perform OCR on an image and return text with bounding boxes."""
-        prompt = """Identify ALL text visible in this image. For each text snippet, provide the text and its approximate location.
-
-Return a JSON list of objects:
-- "text": The detected text
-- "left": X coordinate (0.0 to 1.0)
-- "top": Y coordinate (0.0 to 1.0)
-- "width": Relative width (0.0 to 1.0)
-- "height": Relative height (0.0 to 1.0)
-
-Return ONLY the JSON list."""
-
-        response = self.analyze_image(image_path, prompt)
+        response = self.analyze_image(image_path, prompts.OCR)
         try:
             import json
             import re
+
             match = re.search(r"\[.*\]", response, re.DOTALL)
             if match:
                 return json.loads(match.group())

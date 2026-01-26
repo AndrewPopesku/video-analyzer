@@ -214,6 +214,7 @@ class EmbeddingDeduplicator:
         """Load model once and cache it."""
         if EmbeddingDeduplicator._model is None:
             from sentence_transformers import SentenceTransformer
+
             EmbeddingDeduplicator._model = SentenceTransformer(self.model_name)
 
     @property

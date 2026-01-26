@@ -1,7 +1,5 @@
 """Audio transcription using provider abstraction."""
 
-from pathlib import Path
-
 from ..config import settings
 from ..ingestion.processor import chunk_audio, get_audio_duration
 from ..storage.media import get_audio_path, load_transcript, save_transcript

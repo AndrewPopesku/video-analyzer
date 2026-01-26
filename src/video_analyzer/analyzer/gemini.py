@@ -9,24 +9,12 @@ from google import genai
 from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
+from video_analyzer.analyzer.exceptions import GeminiAPIError, QuotaExceeded
+
 from ..config import settings
 from ..storage.database import get_today_quota, increment_quota
+from . import prompts
 from .provider import AIProvider
-
-
-class RateLimitExceeded(Exception):
-    """Raised when rate limit is exceeded."""
-    pass
-
-
-class QuotaExceeded(Exception):
-    """Raised when daily quota is exceeded."""
-    pass
-
-
-class GeminiAPIError(Exception):
-    """Raised when Gemini API returns an error."""
-    pass
 
 
 def _should_retry(exception: Exception) -> bool:
@@ -78,42 +66,25 @@ class GeminiProvider(AIProvider):
         self._check_quota()
         self._wait_for_rate_limit()
 
-        prompt = """Transcribe this audio with timestamps. Return a JSON array of segments.
-
-Each segment should have:
-- "start": start time in seconds (float)
-- "end": end time in seconds (float)
-- "text": the transcribed text
-
-Example format:
-[
-  {"start": 0.0, "end": 5.2, "text": "Hello and welcome to this video"},
-  {"start": 5.2, "end": 10.1, "text": "Today we're going to talk about..."}
-]
-
-Important:
-- Create segments at natural speech boundaries (sentences, pauses)
-- Each segment should be 3-10 seconds long
-- Include all spoken words accurately
-- Return ONLY the JSON array, no other text"""
-
         try:
             file_size = audio_path.stat().st_size
             max_inline_size = 15 * 1024 * 1024
 
             config = types.GenerateContentConfig(
-                system_instruction="You are a precise audio transcription assistant. Always return valid JSON.",
+                system_instruction=prompts.SYSTEM_TRANSCRIPTION,
             )
 
             if file_size < max_inline_size:
                 audio_data = audio_path.read_bytes()
-                mime_type = "audio/mpeg" if audio_path.suffix.lower() == ".mp3" else "audio/wav"
+                mime_type = (
+                    "audio/mpeg" if audio_path.suffix.lower() == ".mp3" else "audio/wav"
+                )
 
                 response = self.client.models.generate_content(
                     model=self.model,
                     contents=[
                         types.Part.from_bytes(data=audio_data, mime_type=mime_type),
-                        prompt,
+                        prompts.TRANSCRIPTION,
                     ],
                     config=config,
                 )
@@ -121,7 +92,7 @@ Important:
                 audio_file = self.client.files.upload(file=str(audio_path))
                 response = self.client.models.generate_content(
                     model=self.model,
-                    contents=[audio_file, prompt],
+                    contents=[audio_file, prompts.TRANSCRIPTION],
                     config=config,
                 )
 
@@ -167,7 +138,11 @@ Important:
 
         try:
             image_data = image_path.read_bytes()
-            mime_type = "image/jpeg" if image_path.suffix.lower() in [".jpg", ".jpeg"] else "image/png"
+            mime_type = (
+                "image/jpeg"
+                if image_path.suffix.lower() in [".jpg", ".jpeg"]
+                else "image/png"
+            )
 
             response = self.client.models.generate_content(
                 model=self.model,
@@ -202,8 +177,14 @@ Important:
             parts = []
             for image_path in image_paths:
                 image_data = image_path.read_bytes()
-                mime_type = "image/jpeg" if image_path.suffix.lower() in [".jpg", ".jpeg"] else "image/png"
-                parts.append(types.Part.from_bytes(data=image_data, mime_type=mime_type))
+                mime_type = (
+                    "image/jpeg"
+                    if image_path.suffix.lower() in [".jpg", ".jpeg"]
+                    else "image/png"
+                )
+                parts.append(
+                    types.Part.from_bytes(data=image_data, mime_type=mime_type)
+                )
 
             parts.append(prompt)
 
@@ -235,9 +216,13 @@ Important:
         self._wait_for_rate_limit()
 
         try:
-            config = types.GenerateContentConfig(
-                system_instruction=system,
-            ) if system else None
+            config = (
+                types.GenerateContentConfig(
+                    system_instruction=system,
+                )
+                if system
+                else None
+            )
 
             response = self.client.models.generate_content(
                 model=self.model,
@@ -290,42 +275,7 @@ Important:
             ]
         )
 
-        prompt = f"""Analyze this sequence of video frames to identify distinct scenes.
-
-FRAME TIMESTAMPS:
-{frame_info}
-
-A 'scene' is a coherent segment where the content, setting, or topic remains consistent.
-Look for significant changes in:
-- Location or setting
-- Visual style (e.g., switch from talking head to B-roll footage)
-- Topic or activity being shown
-- Camera angle or shot type
-
-For each scene, provide:
-- "start_time": The timestamp (in seconds) where this scene begins
-- "end_time": The timestamp (in seconds) where this scene ends
-- "label": A short title (3-5 words) describing the scene type
-- "description": A detailed 1-2 sentence description of what is happening in this scene
-
-Return a JSON object with a "scenes" array:
-{{
-  "scenes": [
-    {{
-      "start_time": 0.0,
-      "end_time": 45.0,
-      "label": "Introduction",
-      "description": "The host greets viewers from a home office setup, introducing today's topic."
-    }}
-  ]
-}}
-
-Important:
-- Use the ACTUAL timestamps from the list above, not frame indices
-- Ensure scenes are contiguous (end_time of one scene should match start_time of next)
-- Provide meaningful descriptions that explain WHAT is happening
-- Return ONLY the JSON object."""
-
+        prompt = prompts.scene_detection(frame_info)
         response = self.analyze_images(selected_images, prompt)
         try:
             match = re.search(r"\{.*\}", response, re.DOTALL)
@@ -361,26 +311,14 @@ Important:
             return []
 
         # Gemini can handle multiple images, but we'll limit to a few key ones if there are many
-        # for entity extraction
         selected_images = image_paths[:5] if len(image_paths) > 5 else image_paths
 
-        prompt = f"""Transcript:
-{text}
-
-Identify unique entities (Brands, Locations, People) mentioned in the transcript or visible in the frames.
-
-Return a JSON list of objects:
-- "name": Name of the entity
-- "type": One of "Brand", "Location", "Person"
-- "count": How many times it was mentioned/seen
-- "description": Context or description
-
-Return ONLY the JSON list."""
-
+        prompt = prompts.entity_extraction(text)
         response = self.analyze_images(selected_images, prompt)
         try:
             import json
             import re
+
             match = re.search(r"\[.*\]", response, re.DOTALL)
             if match:
                 return json.loads(match.group())
@@ -393,20 +331,12 @@ Return ONLY the JSON list."""
         if not text:
             return {"topics": [], "keywords": []}
 
-        system = "You are a video metadata expert. Extract high-level topics and keywords from the provided transcript."
-        prompt = f"""Transcript:
-{text}
-
-Return a JSON object with:
-- "topics": List of high-level topics discussed (max 5, each with "name" and "confidence")
-- "keywords": List of important keywords (max 10, each with "text" and "confidence")
-
-Return ONLY the JSON object."""
-
-        response = self.generate(prompt, system=system)
+        prompt = prompts.topics_keywords(text)
+        response = self.generate(prompt, system=prompts.SYSTEM_TOPICS_KEYWORDS)
         try:
             import json
             import re
+
             match = re.search(r"\{.*\}", response, re.DOTALL)
             if match:
                 return json.loads(match.group())
@@ -416,28 +346,17 @@ Return ONLY the JSON object."""
 
     def perform_ocr(self, image_path: Path) -> list[dict]:
         """Perform OCR on an image and return text with bounding boxes."""
-        prompt = """Identify ALL text visible in this image. For each text snippet, provide the text and its approximate location.
-
-Return a JSON list of objects:
-- "text": The detected text
-- "left": X coordinate (0.0 to 1.0)
-- "top": Y coordinate (0.0 to 1.0)
-- "width": Relative width (0.0 to 1.0)
-- "height": Relative height (0.0 to 1.0)
-
-Return ONLY the JSON list."""
-
-        response = self.analyze_image(image_path, prompt)
+        response = self.analyze_image(image_path, prompts.OCR)
         try:
             import json
             import re
+
             match = re.search(r"\[.*\]", response, re.DOTALL)
             if match:
                 return json.loads(match.group())
             return json.loads(response)
         except Exception:
             return []
-
 
 
 # Legacy compatibility - keep get_client for existing code during transition

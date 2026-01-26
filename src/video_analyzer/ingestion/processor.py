@@ -29,11 +29,15 @@ def extract_audio(video_id: str, video_path: Path | None = None) -> Path:
     subprocess.run(
         [
             "ffmpeg",
-            "-i", str(video_path),
+            "-i",
+            str(video_path),
             "-vn",  # no video
-            "-acodec", "libmp3lame",
-            "-ab", "128k",
-            "-ar", "44100",
+            "-acodec",
+            "libmp3lame",
+            "-ab",
+            "128k",
+            "-ar",
+            "44100",
             "-y",  # overwrite
             str(audio_path),
         ],
@@ -73,9 +77,12 @@ def extract_frames(
     subprocess.run(
         [
             "ffmpeg",
-            "-i", str(video_path),
-            "-vf", f"fps={fps}",
-            "-q:v", "2",  # quality (2 is high quality)
+            "-i",
+            str(video_path),
+            "-vf",
+            f"fps={fps}",
+            "-q:v",
+            "2",  # quality (2 is high quality)
             "-y",
             output_pattern,
         ],
@@ -91,9 +98,12 @@ def get_audio_duration(audio_path: Path) -> float:
     result = subprocess.run(
         [
             "ffprobe",
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
             str(audio_path),
         ],
         capture_output=True,
@@ -141,11 +151,16 @@ def chunk_audio(
         subprocess.run(
             [
                 "ffmpeg",
-                "-i", str(audio_path),
-                "-ss", str(start_time),
-                "-t", str(chunk_seconds),
-                "-acodec", "libmp3lame",
-                "-ab", "128k",
+                "-i",
+                str(audio_path),
+                "-ss",
+                str(start_time),
+                "-t",
+                str(chunk_seconds),
+                "-acodec",
+                "libmp3lame",
+                "-ab",
+                "128k",
                 "-y",
                 str(chunk_path),
             ],
@@ -158,3 +173,15 @@ def chunk_audio(
         start_time += chunk_seconds
 
     return chunks
+
+
+class FFmpegProcessor:
+    """FFmpeg-based processor implementing MediaProcessor protocol."""
+
+    def extract_audio(self, video_id: str, video_path: Path) -> Path:
+        """Extract audio from video file."""
+        return extract_audio(video_id, video_path)
+
+    def extract_frames(self, video_id: str, video_path: Path) -> list[Path]:
+        """Extract frames from video file."""
+        return extract_frames(video_id, video_path)

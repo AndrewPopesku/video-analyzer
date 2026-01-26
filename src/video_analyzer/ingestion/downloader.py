@@ -3,23 +3,10 @@
 import re
 import subprocess
 import json
-from dataclasses import dataclass
 from pathlib import Path
 
+from ..interfaces import VideoInfo
 from ..storage.media import ensure_video_dir, get_video_path
-
-
-@dataclass
-class VideoInfo:
-    """Video metadata from YouTube."""
-
-    video_id: str
-    url: str
-    title: str
-    channel: str
-    duration_seconds: int
-    thumbnail_url: str | None = None
-    description: str | None = None
 
 
 def extract_video_id(url: str) -> str | None:
@@ -70,7 +57,7 @@ def get_video_info(url: str) -> VideoInfo:
 def download_video(url: str, max_quality: str = "720p") -> tuple[VideoInfo, Path]:
     """Download video and return info and path."""
     info = get_video_info(url)
-    video_dir = ensure_video_dir(info.video_id)
+    _ = ensure_video_dir(info.video_id)
     output_path = get_video_path(info.video_id)
 
     if output_path.exists():
@@ -80,12 +67,27 @@ def download_video(url: str, max_quality: str = "720p") -> tuple[VideoInfo, Path
     subprocess.run(
         [
             "yt-dlp",
-            "-f", f"bestvideo[height<={max_quality[:-1]}]+bestaudio/best[height<={max_quality[:-1]}]",
-            "-o", str(output_path),
-            "--merge-output-format", "mp4",
+            "-f",
+            f"bestvideo[height<={max_quality[:-1]}]+bestaudio/best[height<={max_quality[:-1]}]",
+            "-o",
+            str(output_path),
+            "--merge-output-format",
+            "mp4",
             url,
         ],
         check=True,
     )
 
     return info, output_path
+
+
+class YouTubeDownloader:
+    """YouTube downloader implementing MediaDownloader protocol."""
+
+    def get_info(self, url: str) -> VideoInfo:
+        """Get video metadata without downloading."""
+        return get_video_info(url)
+
+    def download(self, url: str) -> tuple[VideoInfo, Path]:
+        """Download video and return info and path."""
+        return download_video(url)
